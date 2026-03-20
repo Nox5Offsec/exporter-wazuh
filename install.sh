@@ -149,20 +149,20 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Install Python package
+# Install Python package (isolated virtualenv — works on Ubuntu 24.04+)
 # ---------------------------------------------------------------------------
-info "Installing soc-exporter Python package…"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-pip3 install --quiet --upgrade "$SCRIPT_DIR"
+VENV_DIR="/opt/soc-exporter"
+info "Creating virtualenv at ${VENV_DIR}…"
+python3 -m venv "$VENV_DIR"
 
-# Resolve installed binary path and expose at /usr/local/bin
-INSTALLED_BIN="$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))")/soc-exporter"
-if [[ -f "$INSTALLED_BIN" ]]; then
-  ln -sf "$INSTALLED_BIN" "$INSTALL_BIN"
-elif [[ ! -f "$INSTALL_BIN" ]]; then
-  warn "Could not locate installed binary at ${INSTALLED_BIN}."
-  warn "Ensure ${INSTALL_BIN} is in PATH after manual installation."
-fi
+info "Installing soc-exporter into virtualenv…"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+"${VENV_DIR}/bin/pip" install --quiet --upgrade pip
+"${VENV_DIR}/bin/pip" install --quiet "$SCRIPT_DIR"
+
+# Expose the binary globally
+ln -sf "${VENV_DIR}/bin/soc-exporter" "$INSTALL_BIN"
+info "Binary linked at ${INSTALL_BIN}"
 
 # ---------------------------------------------------------------------------
 # systemd service
