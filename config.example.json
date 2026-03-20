@@ -1,0 +1,16 @@
+{
+  "api_url": "https://soc-api.nox5.com.br",
+  "installation_id": "inst_xxxxxxxxxxxxxxxx",
+  "ingestion_token": "<redacted — set by soc-exporter init>",
+  "agent_name": "client-prod-01",
+  "environment": "prod",
+  "wazuh_alerts_path": "/var/ossec/logs/alerts/alerts.json",
+  "heartbeat_interval": 60,
+  "send_batch_size": 100,
+  "send_interval": 5,
+  "retry_max_attempts": 10,
+  "retry_base_delay": 2.0,
+  "retry_max_delay": 300.0,
+  "buffer_db_path": "/var/lib/soc-exporter/buffer.db",
+  "log_level": "INFO"
+}

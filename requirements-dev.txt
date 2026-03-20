@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=7.0
+pytest-timeout>=2.1
+responses>=0.23          # HTTP mock for test_api_client.py
