@@ -50,7 +50,7 @@ class APIClient:
         """POST /v1/agents/register — returns {installation_id, ingestion_token}."""
         payload = {
             "activation_key": activation_key,
-            "name": name,
+            "agent_name": name,
             "environment": environment,
             "hostname": socket.gethostname(),
         }
