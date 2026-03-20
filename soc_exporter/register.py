@@ -37,8 +37,11 @@ def run_interactive() -> None:
         print(f"\n[ERROR] Registration failed (HTTP {exc.status_code}): {exc.body}")
         sys.exit(1)
 
-    installation_id = result.get("installation_id")
-    ingestion_token = result.get("ingestion_token")
+    # API may wrap the payload in a "data" envelope
+    payload = result.get("data", result)
+
+    installation_id = payload.get("installation_id")
+    ingestion_token = payload.get("ingestion_token")
 
     if not installation_id or not ingestion_token:
         print(f"\n[ERROR] Unexpected API response: {result}")
