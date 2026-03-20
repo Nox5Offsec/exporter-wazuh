@@ -52,10 +52,26 @@ if [[ "${1:-}" == "--uninstall" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+info "Installing system dependencies…"
+
+if command -v apt-get &>/dev/null; then
+  apt-get update -qq
+  apt-get install -y -qq python3 python3-pip python3-venv curl unzip
+elif command -v yum &>/dev/null; then
+  yum install -y -q python3 python3-pip curl unzip
+elif command -v dnf &>/dev/null; then
+  dnf install -y -q python3 python3-pip curl unzip
+else
+  warn "Package manager not detected (apt/yum/dnf). Skipping system deps."
+fi
+
+# ---------------------------------------------------------------------------
 # Python check
 # ---------------------------------------------------------------------------
 if ! command -v python3 &>/dev/null; then
-  error "python3 not found. Install python3 and retry."
+  error "python3 not found after dependency install. Aborting."
   exit 1
 fi
 
@@ -64,7 +80,13 @@ PY_VER=$(python3 -c 'import sys; print(sys.version_info >= (3, 8))')
 
 if ! command -v pip3 &>/dev/null; then
   warn "pip3 not found — bootstrapping via ensurepip…"
-  python3 -m ensurepip --upgrade || { error "Cannot install pip."; exit 1; }
+  python3 -m ensurepip --upgrade 2>/dev/null || {
+    warn "ensurepip failed — trying get-pip.py…"
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3 || {
+      error "Cannot install pip. Install python3-pip manually and retry."
+      exit 1
+    }
+  }
 fi
 
 # ---------------------------------------------------------------------------
