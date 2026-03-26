@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from .agent_groups import AgentGroupCache
 from .api_client import APIClient, APIError, AuthError, NetworkError, PayloadError
 from .buffer import Buffer
 from .config import Config
@@ -35,12 +36,14 @@ class Sender(threading.Thread):
         buffer: Buffer,
         config: Config,
         stop_event: threading.Event,
+        agent_group_cache: AgentGroupCache | None = None,
     ):
         super().__init__(name="sender", daemon=True)
         self._client = client
         self._buffer = buffer
         self._cfg = config
         self._stop = stop_event
+        self._group_cache = agent_group_cache
         self._log = _logger.get()
         self._stats = {
             "sent": 0,
@@ -94,8 +97,13 @@ class Sender(threading.Thread):
             pending,
         )
 
+        agent_groups: list[dict] | None = None
+        if self._group_cache is not None and self._cfg.get("send_agent_groups", True):
+            groups = self._group_cache.get_for_batch(events)
+            agent_groups = groups if groups else None
+
         try:
-            result = self._client.ingest_events(inst, events)
+            result = self._client.ingest_events(inst, events, agent_groups=agent_groups)
             self._buffer.ack(ids)
             self._stats["sent"] += len(ids)
 

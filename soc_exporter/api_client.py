@@ -73,12 +73,28 @@ class APIClient:
     # Ingest
     # ------------------------------------------------------------------
 
-    def ingest_events(self, installation_id: str, events: list[dict]) -> dict:
-        """POST /v1/ingest/wazuh — batch of events."""
-        payload = {
+    def ingest_events(
+        self,
+        installation_id: str,
+        events: list[dict],
+        agent_groups: list[dict] | None = None,
+    ) -> dict:
+        """POST /v1/ingest/wazuh — batch of events.
+
+        Args:
+            installation_id: registered agent ID.
+            events: list of enriched alert dicts.
+            agent_groups: optional list of {"agent_name": str, "group_name": str}
+                entries for agents present in this batch.  Omitted from the
+                payload when None or empty (backwards-compatible with APIs that
+                do not yet process this field).
+        """
+        payload: dict = {
             "installation_id": installation_id,
             "events": events,
         }
+        if agent_groups:
+            payload["agent_groups"] = agent_groups
         return self._post("/v1/ingest/wazuh", json=payload)
 
     # ------------------------------------------------------------------

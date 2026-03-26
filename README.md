@@ -303,3 +303,10 @@ pytest tests/test_api_client.py -v # classificação de erros HTTP
 - [ ] `systemctl restart soc-exporter` não perde eventos
 - [ ] Revisar logs por 24h em busca de erros recorrentes
 - [ ] Confirmar que token não vazou em nenhum log (`grep -r "Bearer" /var/log/soc-exporter/`)
+
+---
+
+## Autores
+
+**Author:** Cumbuc4
+**Co-Author:** Nox5

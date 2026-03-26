@@ -1,8 +1,9 @@
 """Configuration management.
 
-Config is stored at /etc/soc-exporter/config.json with mode 600.
+Config is stored at /etc/soc-exporter/config.json with mode 640 (root:soc-exporter).
 """
 
+import grp
 import json
 import os
 import stat
@@ -25,6 +26,8 @@ _DEFAULTS = {
     "retry_max_delay": 300.0,        # seconds
     "buffer_db_path": "/var/lib/soc-exporter/buffer.db",
     "log_level": "INFO",
+    "send_agent_groups": True,       # include agent_groups in ingest payload
+    "agent_groups_refresh": 300,     # seconds between cache refreshes
 }
 
 
@@ -60,7 +63,12 @@ class Config:
         with open(tmp, "w") as f:
             json.dump(self._data, f, indent=2)
         os.replace(tmp, CONFIG_FILE)
-        os.chmod(CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
+        os.chmod(CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)  # 0o640
+        try:
+            gid = grp.getgrnam("soc-exporter").gr_gid
+            os.chown(CONFIG_FILE, 0, gid)  # root:soc-exporter
+        except KeyError:
+            pass  # group not present (dev environment)
 
     @classmethod
     def load(cls) -> "Config":

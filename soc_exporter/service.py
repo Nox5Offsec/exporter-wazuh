@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 
+from .agent_groups import AgentGroupCache
 from .api_client import APIClient
 from .buffer import Buffer
 from .collector import Collector
@@ -44,6 +45,15 @@ class Service:
         client = APIClient(api_url=cfg.api_url, token=cfg.ingestion_token)
         buffer = Buffer(db_path=cfg.buffer_db_path)
 
+        # Agent-group cache (optional feature — disabled via send_agent_groups: false)
+        group_cache: AgentGroupCache | None = None
+        if cfg.get("send_agent_groups", True):
+            group_cache = AgentGroupCache(
+                refresh_interval=cfg.get("agent_groups_refresh", 300),
+                stop_event=self._stop,
+            )
+            group_cache.load_once()
+
         # Worker threads
         collector = Collector(
             alerts_path=cfg.wazuh_alerts_path,
@@ -56,6 +66,7 @@ class Service:
             buffer=buffer,
             config=cfg,
             stop_event=self._stop,
+            agent_group_cache=group_cache,
         )
 
         def _combined_stats() -> dict:
@@ -80,6 +91,8 @@ class Service:
         collector.start()
         sender.start()
         heartbeat.start()
+        if group_cache is not None:
+            group_cache.start()
 
         log.info("All workers started. Watching %s", cfg.wazuh_alerts_path)
 
@@ -89,7 +102,10 @@ class Service:
                 self._stop.wait(timeout=5)
                 self._health_check(collector, sender, heartbeat, buffer)
         finally:
-            self._shutdown(collector, sender, heartbeat)
+            workers = [collector, sender, heartbeat]
+            if group_cache is not None:
+                workers.append(group_cache)
+            self._shutdown(*workers)
 
     # ------------------------------------------------------------------
     # Internal

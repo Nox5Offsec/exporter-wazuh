@@ -107,16 +107,23 @@ if ! id "$SYSTEM_USER" &>/dev/null; then
     "$SYSTEM_USER"
 fi
 
-# Grant access to Wazuh alerts (ossec group)
-if getent group ossec &>/dev/null; then
-  if ! id -nG "$SYSTEM_USER" | grep -qw ossec; then
-    usermod -aG ossec "$SYSTEM_USER"
-    info "Added ${SYSTEM_USER} to 'ossec' group for alerts access."
+# Grant access to Wazuh alerts (Wazuh 4.x uses 'wazuh' group; older versions used 'ossec')
+_wazuh_group=""
+if getent group wazuh &>/dev/null; then
+  _wazuh_group="wazuh"
+elif getent group ossec &>/dev/null; then
+  _wazuh_group="ossec"
+fi
+
+if [[ -n "$_wazuh_group" ]]; then
+  if ! id -nG "$SYSTEM_USER" | grep -qw "$_wazuh_group"; then
+    usermod -aG "$_wazuh_group" "$SYSTEM_USER"
+    info "Added ${SYSTEM_USER} to '${_wazuh_group}' group for alerts access."
   else
-    info "${SYSTEM_USER} is already in 'ossec' group."
+    info "${SYSTEM_USER} is already in '${_wazuh_group}' group."
   fi
 else
-  warn "Group 'ossec' not found — you may need to grant read access to alerts manually."
+  warn "Neither 'wazuh' nor 'ossec' group found — grant read access to alerts manually."
 fi
 
 # ---------------------------------------------------------------------------
@@ -140,13 +147,21 @@ chown "$SYSTEM_USER":"$SYSTEM_GROUP" "$LOG_DIR"
 chmod 750 "$LOG_DIR"
 
 # ---------------------------------------------------------------------------
-# If config already exists, enforce 600
+# Fix ownership of existing files that may have been created as root
 # ---------------------------------------------------------------------------
 if [[ -f "$CONFIG_FILE" ]]; then
-  info "Enforcing mode 600 on existing config…"
+  info "Enforcing mode 640 on existing config…"
   chown root:"$SYSTEM_GROUP" "$CONFIG_FILE"
-  chmod 600 "$CONFIG_FILE"
+  chmod 640 "$CONFIG_FILE"
 fi
+
+if [[ -f "${DATA_DIR}/buffer.db" ]]; then
+  info "Fixing ownership of existing buffer.db…"
+  chown "$SYSTEM_USER":"$SYSTEM_GROUP" "${DATA_DIR}/buffer.db"
+fi
+
+# Fix any log files created as root
+find "$LOG_DIR" -maxdepth 1 -type f ! -user "$SYSTEM_USER" -exec chown "$SYSTEM_USER":"$SYSTEM_GROUP" {} \;
 
 # ---------------------------------------------------------------------------
 # Install Python package (isolated virtualenv — works on Ubuntu 24.04+)

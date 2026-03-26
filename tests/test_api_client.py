@@ -58,6 +58,39 @@ def test_request_id_extracted(client):
     assert result.get("_request_id") == "req-abc-123"
 
 
+@resp_lib.activate
+def test_ingest_sends_agent_groups_when_provided(client):
+    _register_post("/v1/ingest/wazuh", 200, json={"ok": True})
+    groups = [{"agent_name": "AGENT-A", "group_name": "nox5-tecnica"}]
+    client.ingest_events("inst-1", [{"x": 1}], agent_groups=groups)
+
+    assert len(resp_lib.calls) == 1
+    body = resp_lib.calls[0].request.body
+    import json
+    payload = json.loads(body)
+    assert payload["agent_groups"] == groups
+
+
+@resp_lib.activate
+def test_ingest_omits_agent_groups_when_none(client):
+    _register_post("/v1/ingest/wazuh", 200, json={"ok": True})
+    client.ingest_events("inst-1", [{"x": 1}], agent_groups=None)
+
+    import json
+    payload = json.loads(resp_lib.calls[0].request.body)
+    assert "agent_groups" not in payload
+
+
+@resp_lib.activate
+def test_ingest_omits_agent_groups_when_empty_list(client):
+    _register_post("/v1/ingest/wazuh", 200, json={"ok": True})
+    client.ingest_events("inst-1", [{"x": 1}], agent_groups=[])
+
+    import json
+    payload = json.loads(resp_lib.calls[0].request.body)
+    assert "agent_groups" not in payload
+
+
 # ---------------------------------------------------------------------------
 # Error taxonomy
 # ---------------------------------------------------------------------------

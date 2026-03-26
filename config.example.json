@@ -12,5 +12,8 @@
   "retry_base_delay": 2.0,
   "retry_max_delay": 300.0,
   "buffer_db_path": "/var/lib/soc-exporter/buffer.db",
-  "log_level": "INFO"
+  "log_level": "INFO",
+
+  "send_agent_groups": true,
+  "agent_groups_refresh": 300
 }
