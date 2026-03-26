@@ -267,45 +267,6 @@ pytest tests/test_api_client.py -v # classificação de erros HTTP
 
 ---
 
-## Checklist de produção
-
-### Segurança
-- [ ] `config.json` com modo 600
-- [ ] Serviço rodando como usuário `soc-exporter` (não root)
-- [ ] `NoNewPrivileges=true` no systemd unit
-- [ ] Token não aparece em logs (`soc-exporter status` + `journalctl`)
-
-### Resiliência
-- [ ] Buffer SQLite em partição com espaço suficiente (≥ 1 GB)
-- [ ] `Restart=always` configurado no systemd
-- [ ] Testado restart do serviço com eventos pendentes no buffer
-- [ ] Testado com API offline por > 5 minutos
-
-### Conectividade
-- [ ] HTTPS funciona do servidor do cliente para `soc-api.nox5.com.br`
-- [ ] Heartbeat aparece no dashboard da API central
-- [ ] Eventos chegam na API após `soc-exporter init`
-
-### Monitoramento
-- [ ] `soc-exporter status` mostra RUNNING
-- [ ] Último heartbeat há menos de 2 minutos
-- [ ] Buffer pending = 0 em condição normal
-
----
-
-## Checklist de piloto
-
-- [ ] `install.sh` executado sem erros em servidor de homologação
-- [ ] `soc-exporter init` com activation key do cliente
-- [ ] Alertas reais do Wazuh chegando na API central (verificar no dashboard)
-- [ ] Simular queda de rede (block firewall) → buffer acumula → restaurar → buffer drena
-- [ ] Simular rotação de log (`logrotate -f /etc/logrotate.d/wazuh`) → collector continua
-- [ ] `systemctl restart soc-exporter` não perde eventos
-- [ ] Revisar logs por 24h em busca de erros recorrentes
-- [ ] Confirmar que token não vazou em nenhum log (`grep -r "Bearer" /var/log/soc-exporter/`)
-
----
-
 ## Autores
 
 **Author:** Cumbuc4
