@@ -1,12 +1,17 @@
-"""Tests: AgentGroupCache — global.db (primary) and filesystem (fallback)."""
+"""Tests: AgentGroupCache — Wazuh API (primary), global.db, and filesystem (fallbacks)."""
 
 import os
 import sqlite3
 import threading
 
 import pytest
+import responses as resp_lib
 
 from soc_exporter.agent_groups import AgentGroupCache
+
+WAZUH_API = "https://localhost:55000"
+AUTH_URL   = WAZUH_API + "/security/user/authenticate"
+AGENTS_URL = WAZUH_API + "/agents"
 
 
 # ---------------------------------------------------------------------------
@@ -383,3 +388,140 @@ class TestGetForBatch:
         )
         cache.load_once()
         assert cache.get_for_batch([_event("AGENT-A")]) == []
+
+
+# ---------------------------------------------------------------------------
+# Primary path: Wazuh REST API
+# ---------------------------------------------------------------------------
+
+def _api_cache(tmp_path=None) -> AgentGroupCache:
+    """Build a cache configured to use the Wazuh API source."""
+    kwargs = dict(
+        wazuh_api_url=WAZUH_API,
+        wazuh_api_user="wazuh-wui",
+        wazuh_api_password="secret",
+        stop_event=threading.Event(),
+    )
+    if tmp_path:
+        kwargs["global_db_path"] = str(tmp_path / "nonexistent.db")
+    return AgentGroupCache(**kwargs)
+
+
+def _mock_auth(token: str = "jwt-token-abc") -> None:
+    resp_lib.add(
+        resp_lib.POST, AUTH_URL, status=200,
+        json={"data": {"token": token}},
+    )
+
+
+def _mock_agents(items: list[dict]) -> None:
+    resp_lib.add(
+        resp_lib.GET, AGENTS_URL, status=200,
+        json={"data": {"affected_items": items, "total_affected_items": len(items)}},
+    )
+
+
+class TestReadFromWazuhAPI:
+    @resp_lib.activate
+    def test_single_group(self, tmp_path):
+        _mock_auth()
+        _mock_agents([{"name": "NB-TEC-FELIPE", "group": ["nox5-tecnica"]}])
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        result = cache.get_for_batch([_event("NB-TEC-FELIPE")])
+        assert result == [{"agent_name": "NB-TEC-FELIPE", "group_name": "nox5-tecnica"}]
+
+    @resp_lib.activate
+    def test_multi_group_agent(self, tmp_path):
+        _mock_auth()
+        _mock_agents([{"name": "AGENT-A", "group": ["nox5-tecnica", "default"]}])
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        result = cache.get_for_batch([_event("AGENT-A")])
+        assert len(result) == 2
+        assert {e["group_name"] for e in result} == {"nox5-tecnica", "default"}
+
+    @resp_lib.activate
+    def test_multiple_agents(self, tmp_path):
+        _mock_auth()
+        _mock_agents([
+            {"name": "AGENT-A", "group": ["g1"]},
+            {"name": "AGENT-B", "group": ["g2"]},
+        ])
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        result = cache.get_for_batch([_event("AGENT-A"), _event("AGENT-B")])
+        assert {e["agent_name"] for e in result} == {"AGENT-A", "AGENT-B"}
+
+    @resp_lib.activate
+    def test_normalises_to_lowercase(self, tmp_path):
+        _mock_auth()
+        _mock_agents([{"name": "AGENT-A", "group": ["NOX5-TECNICA"]}])
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        result = cache.get_for_batch([_event("AGENT-A")])
+        assert result[0]["group_name"] == "nox5-tecnica"
+
+    @resp_lib.activate
+    def test_strips_whitespace(self, tmp_path):
+        _mock_auth()
+        _mock_agents([{"name": "AGENT-A", "group": ["  nox5-tecnica  "]}])
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        result = cache.get_for_batch([_event("AGENT-A")])
+        assert result[0]["group_name"] == "nox5-tecnica"
+
+    @resp_lib.activate
+    def test_omits_agent_with_no_group(self, tmp_path):
+        _mock_auth()
+        _mock_agents([
+            {"name": "AGENT-A", "group": ["g1"]},
+            {"name": "AGENT-B"},          # no group field
+            {"name": "AGENT-C", "group": []},  # empty group list
+        ])
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        result = cache.get_for_batch([_event("AGENT-B"), _event("AGENT-C")])
+        assert result == []
+
+    @resp_lib.activate
+    def test_auth_failure_returns_empty(self, tmp_path):
+        resp_lib.add(resp_lib.POST, AUTH_URL, status=401, json={"error": "unauthorized"})
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        result = cache.get_for_batch([_event("AGENT-A")])
+        assert result == []
+
+    @resp_lib.activate
+    def test_api_preferred_over_global_db(self, tmp_path):
+        """When API credentials are set, API is used even if global.db exists."""
+        db_path = str(tmp_path / "global.db")
+        _make_global_db(db_path, agents=[(1, "AGENT-A", "wrong-group")])
+
+        _mock_auth()
+        _mock_agents([{"name": "AGENT-A", "group": ["correct-group"]}])
+
+        cache = AgentGroupCache(
+            wazuh_api_url=WAZUH_API,
+            wazuh_api_user="wazuh-wui",
+            wazuh_api_password="secret",
+            global_db_path=db_path,
+            stop_event=threading.Event(),
+        )
+        cache.load_once()
+        result = cache.get_for_batch([_event("AGENT-A")])
+        assert result[0]["group_name"] == "correct-group"
+
+    @resp_lib.activate
+    def test_jwt_token_cached(self, tmp_path):
+        """Auth endpoint is only called once per token lifetime."""
+        _mock_auth()
+        _mock_agents([{"name": "AGENT-A", "group": ["g1"]}])
+        _mock_agents([{"name": "AGENT-A", "group": ["g1"]}])
+
+        cache = _api_cache(tmp_path)
+        cache.load_once()
+        cache._refresh()  # second refresh — should reuse cached token
+
+        auth_calls = [c for c in resp_lib.calls if "authenticate" in c.request.url]
+        assert len(auth_calls) == 1  # only one auth call despite two refreshes

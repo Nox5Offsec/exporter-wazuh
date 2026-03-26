@@ -50,6 +50,9 @@ class Service:
         if cfg.get("send_agent_groups", True):
             group_cache = AgentGroupCache(
                 refresh_interval=cfg.get("agent_groups_refresh", 300),
+                wazuh_api_url=cfg.get("wazuh_api_url", "https://localhost:55000"),
+                wazuh_api_user=cfg.get("wazuh_api_user"),
+                wazuh_api_password=cfg.get("wazuh_api_password"),
                 stop_event=self._stop,
             )
             group_cache.load_once()

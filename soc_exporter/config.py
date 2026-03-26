@@ -28,6 +28,9 @@ _DEFAULTS = {
     "log_level": "INFO",
     "send_agent_groups": True,       # include agent_groups in ingest payload
     "agent_groups_refresh": 300,     # seconds between cache refreshes
+    "wazuh_api_url": "https://localhost:55000",  # Wazuh REST API base URL
+    "wazuh_api_user": None,          # set to enable API source (e.g. "wazuh-wui")
+    "wazuh_api_password": None,      # set to enable API source
 }
 
 

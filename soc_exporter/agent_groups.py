@@ -1,46 +1,42 @@
 """Agent-to-group mapping cache.
 
-Reads Wazuh's local state to build an in-memory dict of
-{agent_name: [group, ...]} without needing the Wazuh REST API.
+Builds an in-memory dict of {agent_name: [group, ...]} and refreshes it
+periodically in a background thread.
 
-=== Sources (read-only, no write) ===
+=== Sources (tried in order) ===
 
-Primary — Wazuh 4.x (global.db):
-  /var/ossec/var/db/global.db
+1. Wazuh REST API  — primary when wazuh_api_user + wazuh_api_password are set.
+   GET /agents?select=name,group  (requires Wazuh 4.x, JWT auth)
+   This is the definitive source: group assignments are always up-to-date.
 
-  Two query strategies are tried in order:
-    1. belongs + "group" tables  — used when the agent belongs to one or more
-       groups and Wazuh has populated the relational tables (standard 4.x).
-    2. agent."group" column      — legacy fallback if the belongs table is
-       absent or empty (older schema / fresh install with no groups set).
+2. global.db  — fallback when API credentials are not configured.
+   /var/ossec/var/db/global.db  (Wazuh 4.x SQLite, read-only)
+   Two sub-strategies: belongs+"group" tables → agent."group" column.
 
-Fallback — older Wazuh / dev environment (filesystem):
-  /var/ossec/etc/client.keys         — id → name
-  /var/ossec/queue/agent-groups/{id} — group(s) per agent id
+3. Filesystem  — last-resort fallback (older Wazuh / dev environments).
+   /var/ossec/etc/client.keys + /var/ossec/queue/agent-groups/{id}
 
-The filesystem fallback is used only when global.db does not exist.
+=== Wazuh API auth ===
 
-=== Permissions ===
+Uses JWT tokens.  Flow:
+  POST {wazuh_api_url}/security/user/authenticate  (Basic auth)
+  → {"data": {"token": "<JWT>"}}
 
-global.db is owned by wazuh:wazuh (mode 660).
-Add soc-exporter to the wazuh group — no other permission change needed:
+  GET  {wazuh_api_url}/agents?select=name,group&limit=500
+  → {"data": {"affected_items": [{"name": "...", "group": ["..."]}, ...]}}
 
-  sudo usermod -aG wazuh soc-exporter
-
-The DB is opened in read-only URI mode (mode=ro), so the process can never
-write to it even if file permissions were misconfigured.
-
-Verify access before starting the service:
-  sudo -u soc-exporter sqlite3 /var/ossec/var/db/global.db \
-    "SELECT name FROM agent WHERE id > 0 LIMIT 5;"
+Tokens are cached and refreshed 60 s before expiry (_TOKEN_EXPIRY_BUFFER).
+SSL verification is disabled by default (Wazuh uses a self-signed cert).
 
 === Group name normalisation ===
 
-Group names are normalised on ingest:
-  strip()  — removes surrounding whitespace
-  lower()  — canonical lower-case
-
+strip() + lower() on all group names.
 Multi-group agents produce one entry per group.
+
+=== Permissions ===
+
+For global.db fallback, add soc-exporter to the wazuh group:
+  sudo usermod -aG wazuh soc-exporter
 """
 
 from __future__ import annotations
@@ -48,15 +44,26 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 from typing import Optional
+
+import requests
+import urllib3
 
 from . import logger as _logger
 
-_GLOBAL_DB_PATH   = "/var/ossec/var/db/global.db"
-_CLIENT_KEYS_PATH = "/var/ossec/etc/client.keys"       # filesystem fallback
-_AGENT_GROUPS_DIR = "/var/ossec/queue/agent-groups"    # filesystem fallback
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# SQL: multi-group via relational tables (standard Wazuh 4.x)
+_GLOBAL_DB_PATH   = "/var/ossec/var/db/global.db"
+_CLIENT_KEYS_PATH = "/var/ossec/etc/client.keys"
+_AGENT_GROUPS_DIR = "/var/ossec/queue/agent-groups"
+
+# Re-authenticate this many seconds before the JWT actually expires
+_TOKEN_EXPIRY_BUFFER = 60
+
+# Wazuh API pagination limit (500 covers virtually all environments)
+_AGENTS_PAGE_LIMIT = 500
+
 _SQL_BELONGS = """
     SELECT a.name, g.name AS group_name
     FROM   agent a
@@ -66,7 +73,6 @@ _SQL_BELONGS = """
     ORDER  BY a.name, g.name
 """
 
-# SQL: single-group via agent."group" column (fallback / older schema)
 _SQL_AGENT_GROUP = """
     SELECT name, "group"
     FROM   agent
@@ -81,32 +87,45 @@ class AgentGroupCache(threading.Thread):
 
     Usage::
 
-        cache = AgentGroupCache(refresh_interval=300, stop_event=stop)
-        cache.load_once()   # synchronous first load before threads start
-        cache.start()       # background refresh every refresh_interval seconds
+        cache = AgentGroupCache(
+            wazuh_api_url="https://localhost:55000",
+            wazuh_api_user="wazuh-wui",
+            wazuh_api_password="<password>",
+            refresh_interval=300,
+            stop_event=stop,
+        )
+        cache.load_once()
+        cache.start()
 
-        # In Sender, per-batch:
         agent_groups = cache.get_for_batch(events)
     """
 
     def __init__(
         self,
         refresh_interval: int = 300,
+        wazuh_api_url: str = "https://localhost:55000",
+        wazuh_api_user: Optional[str] = None,
+        wazuh_api_password: Optional[str] = None,
         global_db_path: str = _GLOBAL_DB_PATH,
         client_keys_path: str = _CLIENT_KEYS_PATH,
         agent_groups_dir: str = _AGENT_GROUPS_DIR,
         stop_event: Optional[threading.Event] = None,
     ):
         super().__init__(name="agent-group-cache", daemon=True)
-        self._interval    = refresh_interval
-        self._db_path     = global_db_path
-        self._keys_path   = client_keys_path
-        self._groups_dir  = agent_groups_dir
-        self._stop        = stop_event or threading.Event()
-        self._log         = _logger.get()
-        self._lock        = threading.RLock()
-        # {agent_name: [normalised_group, ...]}
+        self._interval        = refresh_interval
+        self._api_url         = wazuh_api_url.rstrip("/")
+        self._api_user        = wazuh_api_user
+        self._api_password    = wazuh_api_password
+        self._db_path         = global_db_path
+        self._keys_path       = client_keys_path
+        self._groups_dir      = agent_groups_dir
+        self._stop            = stop_event or threading.Event()
+        self._log             = _logger.get()
+        self._lock            = threading.RLock()
         self._cache: dict[str, list[str]] = {}
+        # JWT token cache
+        self._jwt_token: Optional[str] = None
+        self._jwt_expires_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Thread entry
@@ -128,7 +147,7 @@ class AgentGroupCache(threading.Thread):
     # ------------------------------------------------------------------
 
     def load_once(self) -> None:
-        """Synchronous initial load — call before starting the background thread."""
+        """Synchronous first load — call before starting the background thread."""
         try:
             self._refresh()
         except Exception as exc:
@@ -142,8 +161,8 @@ class AgentGroupCache(threading.Thread):
         Agents not found in the cache are silently omitted.
 
         Args:
-            events: enriched event dicts as produced by Collector._enrich()
-                    (shape: ``{"raw": {..., "agent": {"name": "..."}}, ...}``).
+            events: enriched event dicts from Collector._enrich()
+                    (shape: ``{"raw": {"agent": {"name": "..."}, ...}, ...}``).
         """
         agent_names: set[str] = set()
         for event in events:
@@ -158,7 +177,7 @@ class AgentGroupCache(threading.Thread):
         seen: set[tuple[str, str]] = set()
 
         with self._lock:
-            for name in sorted(agent_names):  # sorted for deterministic output
+            for name in sorted(agent_names):
                 for group in self._cache.get(name) or []:
                     pair = (name, group)
                     if pair not in seen:
@@ -168,16 +187,16 @@ class AgentGroupCache(threading.Thread):
         return result
 
     # ------------------------------------------------------------------
-    # Internal — refresh orchestration
+    # Refresh orchestration
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        if os.path.exists(self._db_path):
-            new_cache = self._read_from_global_db()
-            source = "global.db"
+        if self._api_user and self._api_password:
+            new_cache, source = self._read_from_wazuh_api(), "wazuh-api"
+        elif os.path.exists(self._db_path):
+            new_cache, source = self._read_from_global_db(), "global.db"
         else:
-            new_cache = self._read_from_filesystem()
-            source = "filesystem (fallback)"
+            new_cache, source = self._read_from_filesystem(), "filesystem"
 
         with self._lock:
             self._cache = new_cache
@@ -189,24 +208,129 @@ class AgentGroupCache(threading.Thread):
         )
 
     # ------------------------------------------------------------------
-    # Primary: global.db (Wazuh 4.x)
+    # Source 1: Wazuh REST API
+    # ------------------------------------------------------------------
+
+    def _read_from_wazuh_api(self) -> dict[str, list[str]]:
+        """Fetch agent→groups from GET /agents?select=name,group."""
+        token = self._get_jwt()
+        if not token:
+            return {}
+
+        url    = f"{self._api_url}/agents"
+        params = {"select": "name,group", "limit": _AGENTS_PAGE_LIMIT, "offset": 0}
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            resp = requests.get(
+                url, params=params, headers=headers,
+                verify=False, timeout=10,
+            )
+        except requests.exceptions.RequestException as exc:
+            self._log.warning("[agent-groups] Wazuh API request failed: %s", exc)
+            return {}
+
+        if resp.status_code == 401:
+            # Token may have expired mid-cycle — invalidate and retry once
+            self._jwt_token = None
+            self._jwt_expires_at = 0.0
+            token = self._get_jwt()
+            if not token:
+                return {}
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = requests.get(
+                    url, params=params, headers=headers,
+                    verify=False, timeout=10,
+                )
+            except requests.exceptions.RequestException as exc:
+                self._log.warning("[agent-groups] Wazuh API retry failed: %s", exc)
+                return {}
+
+        if not resp.ok:
+            self._log.warning(
+                "[agent-groups] Wazuh API returned HTTP %d", resp.status_code
+            )
+            return {}
+
+        try:
+            items = resp.json()["data"]["affected_items"]
+        except (KeyError, ValueError) as exc:
+            self._log.warning("[agent-groups] Unexpected Wazuh API response: %s", exc)
+            return {}
+
+        result: dict[str, list[str]] = {}
+        for item in items:
+            name   = item.get("name")
+            groups = item.get("group") or []
+            if not name or not groups:
+                continue
+            normed = [g.strip().lower() for g in groups if g.strip()]
+            if normed:
+                result[name] = normed
+
+        total = resp.json().get("data", {}).get("total_affected_items", 0)
+        if total > _AGENTS_PAGE_LIMIT:
+            self._log.warning(
+                "[agent-groups] %d agents in Wazuh but only %d fetched — "
+                "increase agent_groups_page_limit if needed",
+                total, _AGENTS_PAGE_LIMIT,
+            )
+
+        return result
+
+    def _get_jwt(self) -> Optional[str]:
+        """Return a valid JWT token, re-authenticating if necessary."""
+        if self._jwt_token and time.time() < self._jwt_expires_at:
+            return self._jwt_token
+
+        url = f"{self._api_url}/security/user/authenticate"
+        try:
+            resp = requests.post(
+                url,
+                auth=(self._api_user, self._api_password),
+                verify=False,
+                timeout=10,
+            )
+        except requests.exceptions.RequestException as exc:
+            self._log.warning(
+                "[agent-groups] Wazuh API authentication failed: %s", exc
+            )
+            return None
+
+        if not resp.ok:
+            self._log.warning(
+                "[agent-groups] Wazuh API authentication returned HTTP %d — "
+                "check wazuh_api_user / wazuh_api_password in config",
+                resp.status_code,
+            )
+            return None
+
+        try:
+            token = resp.json()["data"]["token"]
+        except (KeyError, ValueError) as exc:
+            self._log.warning(
+                "[agent-groups] Unexpected auth response from Wazuh API: %s", exc
+            )
+            return None
+
+        # Wazuh JWT tokens last 900 s by default; refresh _TOKEN_EXPIRY_BUFFER s early
+        self._jwt_token      = token
+        self._jwt_expires_at = time.time() + 900 - _TOKEN_EXPIRY_BUFFER
+        return token
+
+    # ------------------------------------------------------------------
+    # Source 2: global.db (Wazuh 4.x SQLite)
     # ------------------------------------------------------------------
 
     def _read_from_global_db(self) -> dict[str, list[str]]:
-        """Read agent→groups from global.db.
-
-        Opens the database in read-only URI mode.  Tries the belongs+group
-        relational tables first; falls back to the agent."group" column if
-        those tables do not exist or are empty.
-        """
         uri = f"file:{self._db_path}?mode=ro"
         try:
             conn = sqlite3.connect(uri, uri=True, timeout=5)
         except sqlite3.OperationalError as exc:
             self._log.warning(
                 "[agent-groups] Cannot open %s (is soc-exporter in the wazuh group?): %s",
-                self._db_path,
-                exc,
+                self._db_path, exc,
             )
             return {}
 
@@ -214,22 +338,17 @@ class AgentGroupCache(threading.Thread):
             result = self._query_belongs_table(conn)
             if result:
                 return result
-            # belongs table exists but is empty — try agent."group" column
             return self._query_agent_group_column(conn)
         except sqlite3.OperationalError:
-            # belongs or "group" table absent — try agent."group" column
             try:
                 return self._query_agent_group_column(conn)
             except sqlite3.OperationalError as exc:
-                self._log.warning(
-                    "[agent-groups] Cannot query global.db: %s", exc
-                )
+                self._log.warning("[agent-groups] Cannot query global.db: %s", exc)
                 return {}
         finally:
             conn.close()
 
     def _query_belongs_table(self, conn: sqlite3.Connection) -> dict[str, list[str]]:
-        """Query belongs + "group" tables → {agent_name: [group, ...]}."""
         result: dict[str, list[str]] = {}
         for agent_name, group_name in conn.execute(_SQL_BELONGS).fetchall():
             norm = group_name.strip().lower()
@@ -241,7 +360,6 @@ class AgentGroupCache(threading.Thread):
         return result
 
     def _query_agent_group_column(self, conn: sqlite3.Connection) -> dict[str, list[str]]:
-        """Query agent."group" column → {agent_name: [group, ...]}."""
         result: dict[str, list[str]] = {}
         for agent_name, group_col in conn.execute(_SQL_AGENT_GROUP).fetchall():
             groups = [g.strip().lower() for g in group_col.split(",") if g.strip()]
@@ -250,11 +368,10 @@ class AgentGroupCache(threading.Thread):
         return result
 
     # ------------------------------------------------------------------
-    # Fallback: filesystem (older Wazuh / dev)
+    # Source 3: filesystem (older Wazuh / dev)
     # ------------------------------------------------------------------
 
     def _read_from_filesystem(self) -> dict[str, list[str]]:
-        """Read agent→groups from client.keys + queue/agent-groups/{id}."""
         agent_ids = self._read_client_keys()
         result: dict[str, list[str]] = {}
         for agent_id, agent_name in agent_ids.items():
@@ -264,11 +381,6 @@ class AgentGroupCache(threading.Thread):
         return result
 
     def _read_client_keys(self) -> dict[str, str]:
-        """Parse client.keys → {agent_id: agent_name}.
-
-        Format per line: ``<id> <name> <ip> <key>``
-        Lines starting with ``#`` and id ``000`` (manager) are skipped.
-        """
         result: dict[str, str] = {}
         try:
             with open(self._keys_path) as fh:
@@ -292,7 +404,6 @@ class AgentGroupCache(threading.Thread):
         return result
 
     def _read_agent_groups_file(self, agent_id: str) -> list[str]:
-        """Read queue/agent-groups/{id} → normalised group list."""
         path = os.path.join(self._groups_dir, agent_id)
         try:
             with open(path) as fh:
@@ -301,9 +412,7 @@ class AgentGroupCache(threading.Thread):
             return []
         except OSError as exc:
             self._log.debug(
-                "[agent-groups] Cannot read groups for agent %s: %s",
-                agent_id,
-                exc,
+                "[agent-groups] Cannot read groups for agent %s: %s", agent_id, exc
             )
             return []
         return [g.strip().lower() for g in raw.split(",") if g.strip()]
