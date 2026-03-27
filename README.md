@@ -52,23 +52,6 @@ O padrão é `/var/ossec/logs/alerts/alerts.json`. Se o Wazuh estiver instalado 
 - **Wazuh 4.x**: totalmente suportado — API REST disponível, grupos de agentes carregados via `GET /agents`.
 - **Wazuh 3.x**: a API REST tem endpoints diferentes — o cache de grupos cai automaticamente para os fallbacks (`global.db` → filesystem), mas pode retornar vazio dependendo da configuração.
 
-### Instalação em novo ambiente
-
-```bash
-# 1. Copiar o repositório para o servidor do cliente
-scp -r exporter-wazuh/ root@<cliente>:/tmp/
-
-# 2. Instalar
-sudo bash /tmp/exporter-wazuh/install.sh
-
-# 3. Registrar (gera credenciais exclusivas para esse cliente)
-soc-exporter init
-
-# 4. Iniciar
-systemctl start soc-exporter
-systemctl status soc-exporter
-```
-
 ---
 
 ## Uso rápido
