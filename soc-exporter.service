@@ -1,6 +1,5 @@
 [Unit]
 Description=SOC Exporter — Wazuh event forwarder
-Documentation=https://soc-api.nox5.com.br
 After=network-online.target wazuh-manager.service
 Wants=network-online.target
 
@@ -15,17 +14,65 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=soc-exporter
 
-# Ensure config and data dirs are accessible
+# -----------------------------------------------------------------------
+# Filesystem access — principle of least privilege
+# -----------------------------------------------------------------------
 ReadWritePaths=/etc/soc-exporter /var/lib/soc-exporter /var/log/soc-exporter
-ReadOnlyPaths=/var/ossec/logs/alerts
+ReadOnlyPaths=/var/ossec/logs/alerts /var/ossec/var/db
 
-# Harden: drop unnecessary privileges
+# -----------------------------------------------------------------------
+# Process hardening
+# -----------------------------------------------------------------------
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+
+# -----------------------------------------------------------------------
+# Capability hardening
+# -----------------------------------------------------------------------
 CapabilityBoundingSet=
 AmbientCapabilities=
+
+# -----------------------------------------------------------------------
+# Syscall and namespace restrictions
+# -----------------------------------------------------------------------
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# -----------------------------------------------------------------------
+# Memory hardening
+# -----------------------------------------------------------------------
+MemoryDenyWriteExecute=true
+
+# -----------------------------------------------------------------------
+# Network restrictions
+# -----------------------------------------------------------------------
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# -----------------------------------------------------------------------
+# Secret injection (optional) — avoids storing secrets in config.json.
+# Uncomment and set paths to files containing the secret values:
+#
+#   EnvironmentFile=/etc/soc-exporter/secrets.env
+#
+# secrets.env should contain (mode 600, root:root):
+#   SOC_INGESTION_TOKEN=<token>
+#   SOC_WAZUH_PASSWORD=<password>
+# -----------------------------------------------------------------------
 
 [Install]
 WantedBy=multi-user.target

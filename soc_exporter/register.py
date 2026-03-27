@@ -5,14 +5,14 @@ from __future__ import annotations
 import getpass
 import sys
 
+import warnings
+
 import requests
 import urllib3
 
 from .api_client import APIClient, APIError, NetworkError
 from .config import Config
 from . import logger as _logger
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def run_interactive() -> None:
@@ -107,15 +107,21 @@ def run_interactive() -> None:
 # ---------------------------------------------------------------------------
 
 def _test_wazuh_api(api_url: str, user: str, password: str) -> bool:
-    """Try to authenticate against the Wazuh API. Returns True on success."""
+    """Try to authenticate against the Wazuh API. Returns True on success.
+
+    Uses verify=False because Wazuh ships with a self-signed certificate.
+    The InsecureRequestWarning is suppressed only for this specific call.
+    """
     url = api_url.rstrip("/") + "/security/user/authenticate"
     try:
-        resp = requests.post(
-            url,
-            auth=(user, password),
-            verify=False,
-            timeout=8,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+            resp = requests.post(
+                url,
+                auth=(user, password),
+                verify=False,
+                timeout=8,
+            )
         return resp.ok and "token" in resp.json().get("data", {})
     except Exception:
         return False

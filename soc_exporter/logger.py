@@ -6,18 +6,46 @@ import os
 import re
 import sys
 
-
-_TOKEN_PATTERN = re.compile(
-    r"(bearer\s+|token['\"]?\s*[:=]\s*)[A-Za-z0-9\-_\.]+",
+# Bearer tokens and raw token fields (expanded charset covers JWT base64url + standard base64)
+_BEARER_PATTERN = re.compile(
+    r"(bearer\s+)[A-Za-z0-9\-_\.+/=]+",
     re.IGNORECASE,
 )
+# token=..., token: ..., "token": "..."
+_TOKEN_FIELD_PATTERN = re.compile(
+    r"(token['\"]?\s*[:=]\s*)[A-Za-z0-9\-_\.+/=]+",
+    re.IGNORECASE,
+)
+# password=..., password: ..., "password": "...", passwd=...
+_PASSWORD_PATTERN = re.compile(
+    r"(passwords?['\"]?\s*[:=]\s*)\S+",
+    re.IGNORECASE,
+)
+# https://user:secret@host or http://user:secret@host
+_URL_CREDS_PATTERN = re.compile(
+    r"(https?://[^:@/\s]+:)[^@\s]+(@)",
+    re.IGNORECASE,
+)
+# Authorization: Basic <base64>
+_BASIC_AUTH_PATTERN = re.compile(
+    r"(basic\s+)[A-Za-z0-9+/=]+",
+    re.IGNORECASE,
+)
+
+_PATTERNS = [
+    (_BEARER_PATTERN,    r"\1[REDACTED]"),
+    (_TOKEN_FIELD_PATTERN, r"\1[REDACTED]"),
+    (_PASSWORD_PATTERN,  r"\1[REDACTED]"),
+    (_URL_CREDS_PATTERN, r"\1[REDACTED]\2"),
+    (_BASIC_AUTH_PATTERN, r"\1[REDACTED]"),
+]
 
 LOG_DIR = "/var/log/soc-exporter"
 LOG_FILE = os.path.join(LOG_DIR, "soc-exporter.log")
 
 
 class _SanitizeFilter(logging.Filter):
-    """Strip tokens and secrets from log records."""
+    """Strip tokens and secrets from log records before any handler writes them."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = _redact(str(record.msg))
@@ -36,7 +64,9 @@ class _SanitizeFilter(logging.Filter):
 
 
 def _redact(text: str) -> str:
-    return _TOKEN_PATTERN.sub(r"\1[REDACTED]", text)
+    for pattern, replacement in _PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def setup(level: str = "INFO") -> logging.Logger:

@@ -26,7 +26,12 @@ Uses JWT tokens.  Flow:
   → {"data": {"affected_items": [{"name": "...", "group": ["..."]}, ...]}}
 
 Tokens are cached and refreshed 60 s before expiry (_TOKEN_EXPIRY_BUFFER).
-SSL verification is disabled by default (Wazuh uses a self-signed cert).
+
+=== TLS verification ===
+
+By default verify=False because Wazuh ships with a self-signed certificate.
+To enable verification supply the path to a CA bundle via wazuh_ca_bundle.
+A one-time WARNING is logged whenever verify=False is in use.
 
 === Group name normalisation ===
 
@@ -52,7 +57,8 @@ import urllib3
 
 from . import logger as _logger
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Do NOT suppress InsecureRequestWarning globally — we do it conditionally
+# on first use when verify=False is actually in effect.
 
 _GLOBAL_DB_PATH   = "/var/ossec/var/db/global.db"
 _CLIENT_KEYS_PATH = "/var/ossec/etc/client.keys"
@@ -106,6 +112,7 @@ class AgentGroupCache(threading.Thread):
         wazuh_api_url: str = "https://localhost:55000",
         wazuh_api_user: Optional[str] = None,
         wazuh_api_password: Optional[str] = None,
+        wazuh_ca_bundle: Optional[str] = None,
         global_db_path: str = _GLOBAL_DB_PATH,
         client_keys_path: str = _CLIENT_KEYS_PATH,
         agent_groups_dir: str = _AGENT_GROUPS_DIR,
@@ -126,6 +133,16 @@ class AgentGroupCache(threading.Thread):
         # JWT token cache
         self._jwt_token: Optional[str] = None
         self._jwt_expires_at: float = 0.0
+        # TLS: use CA bundle when provided; fall back to verify=False with a warning
+        self._ssl_verify: str | bool = wazuh_ca_bundle if wazuh_ca_bundle else False
+        self._ssl_warned = False
+        if self._ssl_verify is False and (wazuh_api_user or wazuh_api_password):
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            self._log.warning(
+                "[agent-groups] Wazuh API SSL verification DISABLED (verify=False). "
+                "Set wazuh_ca_bundle in config to enable certificate verification."
+            )
+            self._ssl_warned = True
 
     # ------------------------------------------------------------------
     # Thread entry
@@ -207,7 +224,7 @@ class AgentGroupCache(threading.Thread):
         try:
             resp = requests.get(
                 url, params=params, headers=headers,
-                verify=False, timeout=10,
+                verify=self._ssl_verify, timeout=10,
             )
         except requests.exceptions.RequestException as exc:
             self._log.warning("[agent-groups] Wazuh API request failed: %s", exc)
@@ -224,7 +241,7 @@ class AgentGroupCache(threading.Thread):
             try:
                 resp = requests.get(
                     url, params=params, headers=headers,
-                    verify=False, timeout=10,
+                    verify=self._ssl_verify, timeout=10,
                 )
             except requests.exceptions.RequestException as exc:
                 self._log.warning("[agent-groups] Wazuh API retry failed: %s", exc)
@@ -272,7 +289,7 @@ class AgentGroupCache(threading.Thread):
             resp = requests.post(
                 url,
                 auth=(self._api_user, self._api_password),
-                verify=False,
+                verify=self._ssl_verify,
                 timeout=10,
             )
         except requests.exceptions.RequestException as exc:

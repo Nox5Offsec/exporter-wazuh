@@ -6,10 +6,10 @@ Handles SIGTERM/SIGINT for graceful shutdown.
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
-import time
 
 from .agent_groups import AgentGroupCache
 from .api_client import APIClient
@@ -19,6 +19,9 @@ from .config import Config
 from .heartbeat import Heartbeat
 from .sender import Sender
 from . import logger as _logger
+
+# Warn in health-check when buffer exceeds this fraction of its limit
+_BUFFER_WARN_FRACTION = 0.80
 
 
 class Service:
@@ -35,6 +38,9 @@ class Service:
             log.error("Agent not registered. Run 'soc-exporter init' first.")
             sys.exit(1)
 
+        # Validate config and environment before starting any thread
+        self._startup_checks(cfg)
+
         log.info(
             "Starting SOC Exporter v%s  installation=%s",
             _version(),
@@ -43,7 +49,11 @@ class Service:
 
         # Core components
         client = APIClient(api_url=cfg.api_url, token=cfg.ingestion_token)
-        buffer = Buffer(db_path=cfg.buffer_db_path)
+        buffer = Buffer(
+            db_path=cfg.buffer_db_path,
+            max_events=cfg.get("buffer_max_events", 0),
+            overflow_policy=cfg.get("buffer_overflow_policy", "drop_oldest"),
+        )
 
         # Agent-group cache (optional feature — disabled via send_agent_groups: false)
         group_cache: AgentGroupCache | None = None
@@ -53,6 +63,7 @@ class Service:
                 wazuh_api_url=cfg.get("wazuh_api_url", "https://localhost:55000"),
                 wazuh_api_user=cfg.get("wazuh_api_user"),
                 wazuh_api_password=cfg.get("wazuh_api_password"),
+                wazuh_ca_bundle=cfg.get("wazuh_ca_bundle"),
                 stop_event=self._stop,
             )
             group_cache.load_once()
@@ -103,12 +114,60 @@ class Service:
         try:
             while not self._stop.is_set():
                 self._stop.wait(timeout=5)
-                self._health_check(collector, sender, heartbeat, buffer)
+                self._health_check(buffer, cfg)
         finally:
             workers = [collector, sender, heartbeat]
             if group_cache is not None:
                 workers.append(group_cache)
             self._shutdown(*workers)
+
+    # ------------------------------------------------------------------
+    # Startup self-check
+    # ------------------------------------------------------------------
+
+    def _startup_checks(self, cfg: Config) -> None:
+        log = self._log
+        fatal = False
+
+        # 1. Config field validation
+        errors = cfg.validate()
+        for err in errors:
+            log.error("Config error: %s", err)
+            fatal = True
+
+        # 2. Alert file accessibility
+        alerts_path = cfg.wazuh_alerts_path
+        if not os.path.exists(alerts_path):
+            log.warning(
+                "Wazuh alerts file not found: %s — "
+                "collector will wait for it to appear",
+                alerts_path,
+            )
+        elif not os.access(alerts_path, os.R_OK):
+            log.error(
+                "Wazuh alerts file is not readable: %s — "
+                "add soc-exporter to the wazuh group: "
+                "sudo usermod -aG wazuh soc-exporter",
+                alerts_path,
+            )
+            fatal = True
+
+        # 3. Buffer directory writeable
+        buf_dir = os.path.dirname(cfg.buffer_db_path)
+        if not os.access(buf_dir, os.W_OK):
+            log.error("Buffer directory is not writable: %s", buf_dir)
+            fatal = True
+
+        # 4. Warn if SSL verification is disabled for the Wazuh API
+        if cfg.get("send_agent_groups", True) and not cfg.get("wazuh_ca_bundle"):
+            log.warning(
+                "Wazuh API SSL verification disabled (verify=False). "
+                "Set wazuh_ca_bundle=/path/to/ca.pem to enable it."
+            )
+
+        if fatal:
+            log.error("Startup checks failed — aborting.")
+            sys.exit(1)
 
     # ------------------------------------------------------------------
     # Internal
@@ -118,16 +177,17 @@ class Service:
         self._log.info("Received signal %s — shutting down…", signum)
         self._stop.set()
 
-    def _health_check(
-        self,
-        collector: Collector,
-        sender: Sender,
-        heartbeat: Heartbeat,
-        buffer: Buffer,
-    ) -> None:
+    def _health_check(self, buffer: Buffer, cfg: Config) -> None:
         pending = buffer.pending_count()
         if pending > 0:
             self._log.info("Buffer pending: %d events", pending)
+        max_events = cfg.get("buffer_max_events", 0)
+        if max_events and pending >= int(max_events * _BUFFER_WARN_FRACTION):
+            self._log.warning(
+                "Buffer near capacity: %d/%d events (%.0f%%). "
+                "Check API connectivity.",
+                pending, max_events, 100.0 * pending / max_events,
+            )
 
     def _shutdown(self, *workers) -> None:
         self._log.info("Waiting for workers to finish…")
