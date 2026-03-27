@@ -66,7 +66,7 @@ O exporter garante **entrega confiável** mesmo em cenários de indisponibilidad
 └──────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
-                      API CENTRAL DO SOC (nox5.com.br)
+                      API CENTRAL DO SOC
 ```
 
 O serviço roda como daemon systemd com **5 threads simultâneas**:
@@ -385,12 +385,12 @@ CREATE TABLE metadata (
 
 **Saída do `status`:**
 ```
-installation_id : inst_xxx
-api_url         : https://soc-api.nox5.com.br
+installation_id : <uuid>
+api_url         : https://<soc-api-host>
 alerts_file     : /var/ossec/logs/alerts/alerts.json  [OK]
 buffer_pending  : 0
-last_heartbeat  : 2026-03-27T12:00:01Z  [OK]
-last_send       : 2026-03-27T12:00:05Z  [OK]
+last_heartbeat  : <timestamp>  [OK]
+last_send       : <timestamp>  [OK]
 systemd         : active (running)
 ```
 
@@ -416,7 +416,7 @@ systemd         : active (running)
   "data": {
     "installation_id": "inst_xxxxxxxxxxxxxxxx",
     "ingestion_token": "eyJhbGc...",
-    "api_url": "https://soc-api.nox5.com.br"
+    "api_url": "https://<soc-api-host>"
   }
 }
 ```
@@ -437,24 +437,19 @@ Content-Type: application/json
   "installation_id": "inst_xxxxxxxxxxxxxxxx",
   "events": [
     {
-      "rule": { "id": 1001, "level": 5, "description": "SSH login" },
-      "agent": { "name": "NB-TEC-LG", "id": "003" },
-      "timestamp": "2026-03-27T12:00:00.000Z",
-      "_hostname": "srv-wazuh-01",
+      "rule": { "id": 1001, "level": 5, "description": "Exemplo de alerta" },
+      "agent": { "name": "agent-hostname", "id": "001" },
+      "timestamp": "2024-01-01T00:00:00.000Z",
+      "_hostname": "wazuh-server",
       "_installation_id": "inst_xxxxxxxxxxxxxxxx",
-      "_sent_at": "2026-03-27T12:00:01.123Z"
+      "_sent_at": "2024-01-01T00:00:01.000Z"
     }
   ],
   "agent_groups": [
-    { "agent_name": "AD_CLOUD_NOX5",    "group_name": "default" },
-    { "agent_name": "NB-COM-FERNANDA",  "group_name": "default" },
-    { "agent_name": "NB-COM-GUSTAVO",   "group_name": "default" },
-    { "agent_name": "NB-COM-GUSTAVO",   "group_name": "redforce" },
-    { "agent_name": "NB-DIR-LUCAS",     "group_name": "default" },
-    { "agent_name": "NB-DIR-LUCAS",     "group_name": "redflag" },
-    { "agent_name": "NB-TEC-FELIPE",    "group_name": "nox5-tecnica" },
-    { "agent_name": "NB-TEC-LG",        "group_name": "default" },
-    { "agent_name": "NB-TEC-LG",        "group_name": "redflag" }
+    { "agent_name": "agent-a",  "group_name": "default" },
+    { "agent_name": "agent-b",  "group_name": "default" },
+    { "agent_name": "agent-b",  "group_name": "grupo-customizado" },
+    { "agent_name": "agent-c",  "group_name": "outro-grupo" }
   ]
 }
 ```
@@ -475,12 +470,12 @@ Content-Type: application/json
 ```json
 {
   "installation_id": "inst_xxxxxxxxxxxxxxxx",
-  "hostname": "srv-wazuh-01",
+  "hostname": "wazuh-server",
   "stats": {
     "buffer_pending": 0,
-    "sent": 39991,
+    "sent": 1500,
     "failed_batches": 0,
-    "retried": 3,
+    "retried": 0,
     "dropped": 0
   }
 }
@@ -511,11 +506,11 @@ Token válido por **900s**. O exporter renova 60s antes de expirar.
 {
   "data": {
     "affected_items": [
-      { "name": "NB-TEC-LG",    "group": ["default", "REDFLAG"] },
-      { "name": "NB-TEC-FELIPE", "group": ["NOX5-TECNICA"] },
-      { "name": "server",        "group": null }
+      { "name": "agent-a", "group": ["default", "grupo-customizado"] },
+      { "name": "agent-b", "group": ["default"] },
+      { "name": "agent-c", "group": null }
     ],
-    "total_affected_items": 14
+    "total_affected_items": 3
   }
 }
 ```
@@ -569,7 +564,7 @@ Permissões: `root:soc-exporter 640`
 
 ### 7.4 Normalização de grupos
 - Todos os nomes de grupo passam por `strip().lower()` antes de armazenar
-- Ex: `" NOX5-TECNICA "` → `"nox5-tecnica"`
+- Ex: `" GRUPO-EXEMPLO "` → `"grupo-exemplo"`
 
 ### 7.5 Fallback de grupos (3 fontes)
 1. **API Wazuh** (primário) — sempre preferida quando credenciais configuradas
