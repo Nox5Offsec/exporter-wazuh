@@ -153,37 +153,20 @@ class AgentGroupCache(threading.Thread):
         except Exception as exc:
             self._log.warning("[agent-groups] Initial load failed: %s", exc)
 
-    def get_for_batch(self, events: list[dict]) -> list[dict]:
-        """Return deduplicated agent_groups entries for agents present in *events*.
+    def get_for_batch(self, events: list[dict]) -> list[dict]:  # noqa: ARG002
+        """Return all cached agent_groups entries.
+
+        Sends the full agent→group map on every batch so the backend always
+        has a complete picture regardless of which agents are active in a
+        given time window.
 
         Each entry is ``{"agent_name": str, "group_name": str}``.
-        A (agent_name, group_name) pair appears at most once per call.
-        Agents not found in the cache are silently omitted.
-
-        Args:
-            events: enriched event dicts from Collector._enrich()
-                    (shape: ``{"raw": {"agent": {"name": "..."}, ...}, ...}``).
         """
-        agent_names: set[str] = set()
-        for event in events:
-            try:
-                name = event["raw"]["agent"]["name"]
-                if name:
-                    agent_names.add(name)
-            except (KeyError, TypeError):
-                continue
-
         result: list[dict] = []
-        seen: set[tuple[str, str]] = set()
-
         with self._lock:
-            for name in sorted(agent_names):
-                for group in self._cache.get(name) or []:
-                    pair = (name, group)
-                    if pair not in seen:
-                        seen.add(pair)
-                        result.append({"agent_name": name, "group_name": group})
-
+            for name in sorted(self._cache):
+                for group in self._cache[name]:
+                    result.append({"agent_name": name, "group_name": group})
         return result
 
     # ------------------------------------------------------------------

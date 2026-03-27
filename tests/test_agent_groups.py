@@ -317,20 +317,8 @@ class TestReadFromFilesystem:
 # ---------------------------------------------------------------------------
 
 class TestGetForBatch:
-    def test_deduplicates_same_pair_in_batch(self, tmp_path):
-        cache = _make_db_cache(
-            tmp_path,
-            agents=[(1, "AGENT-A", None)],
-            groups={10: "g1"},
-            belongs=[(10, 1)],
-        )
-        cache.load_once()
-        # Same agent appears in multiple events
-        events = [_event("AGENT-A")] * 3
-        result = cache.get_for_batch(events)
-        assert len(result) == 1
-
-    def test_only_includes_agents_present_in_batch(self, tmp_path):
+    def test_returns_all_cached_agents(self, tmp_path):
+        """Full cache is always sent, regardless of which agents are in the batch."""
         cache = _make_db_cache(
             tmp_path,
             agents=[(1, "AGENT-A", None), (2, "AGENT-B", None)],
@@ -338,12 +326,12 @@ class TestGetForBatch:
             belongs=[(10, 1), (20, 2)],
         )
         cache.load_once()
+        # Batch only has AGENT-A but result must include AGENT-B too
         result = cache.get_for_batch([_event("AGENT-A")])
-        names = [e["agent_name"] for e in result]
-        assert "AGENT-A" in names
-        assert "AGENT-B" not in names
+        names = {e["agent_name"] for e in result}
+        assert names == {"AGENT-A", "AGENT-B"}
 
-    def test_unknown_agent_silently_omitted(self, tmp_path):
+    def test_no_duplicate_entries(self, tmp_path):
         cache = _make_db_cache(
             tmp_path,
             agents=[(1, "AGENT-A", None)],
@@ -351,24 +339,8 @@ class TestGetForBatch:
             belongs=[(10, 1)],
         )
         cache.load_once()
-        result = cache.get_for_batch([_event("UNKNOWN")])
-        assert result == []
-
-    def test_ignores_malformed_events(self, tmp_path):
-        cache = _make_db_cache(
-            tmp_path,
-            agents=[(1, "AGENT-A", None)],
-            groups={10: "g1"},
-            belongs=[(10, 1)],
-        )
-        cache.load_once()
-        malformed = [
-            {"raw": {}},
-            {"raw": {"agent": {}}},
-            {"raw": {"agent": {"name": ""}}},
-            {"no_raw": True},
-        ]
-        assert cache.get_for_batch(malformed) == []
+        result = cache.get_for_batch([_event("AGENT-A")] * 5)
+        assert len(result) == 1
 
     def test_output_is_deterministic(self, tmp_path):
         cache = _make_db_cache(
@@ -388,6 +360,18 @@ class TestGetForBatch:
         )
         cache.load_once()
         assert cache.get_for_batch([_event("AGENT-A")]) == []
+
+    def test_output_sorted_by_agent_name(self, tmp_path):
+        cache = _make_db_cache(
+            tmp_path,
+            agents=[(1, "ZEBRA", None), (2, "ALPHA", None)],
+            groups={10: "g1", 20: "g2"},
+            belongs=[(10, 1), (20, 2)],
+        )
+        cache.load_once()
+        result = cache.get_for_batch([])
+        names = [e["agent_name"] for e in result]
+        assert names == sorted(names)
 
 
 # ---------------------------------------------------------------------------
@@ -473,16 +457,20 @@ class TestReadFromWazuhAPI:
 
     @resp_lib.activate
     def test_omits_agent_with_no_group(self, tmp_path):
+        """Agents without groups are not stored in the cache."""
         _mock_auth()
         _mock_agents([
             {"name": "AGENT-A", "group": ["g1"]},
-            {"name": "AGENT-B"},          # no group field
+            {"name": "AGENT-B"},               # no group field
             {"name": "AGENT-C", "group": []},  # empty group list
         ])
         cache = _api_cache(tmp_path)
         cache.load_once()
-        result = cache.get_for_batch([_event("AGENT-B"), _event("AGENT-C")])
-        assert result == []
+        result = cache.get_for_batch([])
+        agent_names = {e["agent_name"] for e in result}
+        assert "AGENT-B" not in agent_names
+        assert "AGENT-C" not in agent_names
+        assert "AGENT-A" in agent_names  # only A made it in
 
     @resp_lib.activate
     def test_auth_failure_returns_empty(self, tmp_path):
