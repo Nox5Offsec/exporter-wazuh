@@ -24,6 +24,53 @@ O instalador:
 
 ---
 
+## Compatibilidade com outros ambientes
+
+O exporter funciona em qualquer ambiente que atenda aos requisitos abaixo.
+
+### Requisitos
+
+- Linux com systemd
+- Wazuh 4.x instalado no mesmo servidor
+- Python 3.10+ (o `install.sh` instala automaticamente se necessário)
+
+### O que precisa de atenção ao instalar em um novo cliente
+
+**1. Credenciais únicas por cliente**
+Cada instalação gera um `installation_id` e `ingestion_token` próprios via `soc-exporter init`. Nunca copie o `config.json` de um ambiente para outro.
+
+**2. URL da API Wazuh**
+Por padrão o exporter acessa `https://localhost:55000`. Se o Wazuh estiver em outro host ou porta, informe durante o `soc-exporter init` ou ajuste `wazuh_api_url` em `/etc/soc-exporter/config.json`.
+
+**3. Usuário da API Wazuh**
+É necessário um usuário com permissão para `GET /agents`. O usuário `wazuh-wui` já tem essa permissão por padrão — mas em alguns ambientes pode estar desabilitado ou com senha diferente.
+
+**4. Caminho dos alertas**
+O padrão é `/var/ossec/logs/alerts/alerts.json`. Se o Wazuh estiver instalado em caminho diferente, ajuste `wazuh_alerts_path` no config.
+
+**5. Versão do Wazuh**
+- **Wazuh 4.x**: totalmente suportado — API REST disponível, grupos de agentes carregados via `GET /agents`.
+- **Wazuh 3.x**: a API REST tem endpoints diferentes — o cache de grupos cai automaticamente para os fallbacks (`global.db` → filesystem), mas pode retornar vazio dependendo da configuração.
+
+### Instalação em novo ambiente
+
+```bash
+# 1. Copiar o repositório para o servidor do cliente
+scp -r exporter-wazuh/ root@<cliente>:/tmp/
+
+# 2. Instalar
+sudo bash /tmp/exporter-wazuh/install.sh
+
+# 3. Registrar (gera credenciais exclusivas para esse cliente)
+soc-exporter init
+
+# 4. Iniciar
+systemctl start soc-exporter
+systemctl status soc-exporter
+```
+
+---
+
 ## Uso rápido
 
 ```bash
