@@ -34,6 +34,9 @@ import socket
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+_TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 from typing import Callable
 
 from . import logger as _logger
@@ -191,7 +194,7 @@ class Collector(threading.Thread):
             "raw": event,
             "hostname": self._hostname,
             "installation_id": self._installation_id,
-            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "sent_at": datetime.now(_TZ_SAO_PAULO).isoformat(),
         }
 
     # ------------------------------------------------------------------

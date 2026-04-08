@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+_TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 
 from .api_client import APIClient, AuthError, NetworkError, APIError
 from .buffer import Buffer
@@ -41,7 +44,7 @@ class Heartbeat(threading.Thread):
         try:
             stats = self._stats_fn()
             self._client.heartbeat(inst, stats)
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(_TZ_SAO_PAULO).isoformat()
             self._buffer.set_meta("last_heartbeat_at", now)
             self._buffer.set_meta("last_heartbeat_ok", "true")
             self._log.debug("[%s] Heartbeat sent.", inst)

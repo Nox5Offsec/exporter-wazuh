@@ -15,6 +15,9 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+_TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 
 from .agent_groups import AgentGroupCache
 from .api_client import APIClient, APIError, AuthError, NetworkError, PayloadError
@@ -183,7 +186,7 @@ class Sender(threading.Thread):
     # ------------------------------------------------------------------
 
     def _write_meta(self, last_error: str | None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(_TZ_SAO_PAULO).isoformat()
         try:
             self._buffer.set_meta("last_send_at", now)
             if last_error is not None:
